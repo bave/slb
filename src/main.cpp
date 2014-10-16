@@ -1,3 +1,5 @@
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <poll.h>
 #include <unistd.h>
@@ -5,6 +7,43 @@
 #include "common.hpp"
 #include "ether.hpp"
 #include "netmap.hpp"
+
+inline void
+slot_swap(struct netmap_ring* rxring, struct netmap_ring* txring)
+{
+    struct netmap_slot* rx_slot =
+        ((netmap_slot*)&rxring->slot[rxring->cur]);
+    struct netmap_slot* tx_slot =
+        ((netmap_slot*)&txring->slot[txring->cur]);
+
+#ifdef USERLAND_COPY
+
+    struct ether_header* rx_eth =
+        (struct ether_header*)NETMAP_BUF(rxring, rx_slot->buf_idx);
+    struct ether_header* tx_eth =
+        (struct ether_header*)NETMAP_BUF(txring, tx_slot->buf_idx);
+    memcpy(tx_eth, rx_eth, tx_slot->len);
+
+#else
+
+    uint32_t buf_idx;
+    buf_idx = tx_slot->buf_idx;
+    tx_slot->buf_idx = rx_slot->buf_idx;
+    rx_slot->buf_idx = buf_idx;
+    tx_slot->flags |= NS_BUF_CHANGED;
+    rx_slot->flags |= NS_BUF_CHANGED;
+
+#endif
+
+    tx_slot->len = rx_slot->len;
+
+    if (debug) { 
+        uint8_t* tx_eth = (uint8_t*)NETMAP_BUF(txring, tx_slot->buf_idx);
+        pktdump(tx_eth, tx_slot->len);
+    }
+
+    return;
+}
 
 int main(int argc, char** argv)
 {
@@ -16,100 +55,103 @@ int main(int argc, char** argv)
         }
     }
 
-    /*
-    struct ether_addr mac;
-    get_mac_addr(argv[1], &mac);
-    uint32_t oui;
-    uint32_t bui;
-    oui = mac.octet[0]<<16 | mac.octet[1]<<8 | mac.octet[2];
-    bui = mac.octet[3]<<16 | mac.octet[4]<<8 | mac.octet[5];
-    if (debug) printf("%s_mac_address->%06x:%06x\n", argv[1], oui, bui);
-    */
-
     netmap* nm;
     nm = new netmap();
     if (nm->open_if(argv[1]) == false) exit(1);
 
-    nm->dump_nmr();
+    //nm->dump_nmr();
 
-    /*
-    int tx_hard_fd;
-    int rx_hard_fd;
-    int tx_soft_fd;
-    int rx_soft_fd;
-
-    struct netmap_ring* tx_hard_ring = NULL;
-    struct netmap_ring* rx_hard_ring = NULL;
-    struct netmap_ring* tx_soft_ring = NULL;
-    struct netmap_ring* rx_soft_ring = NULL;
-
-    tx_hard_fd = nm->create_nmring_hard_tx(&tx_hard_ring, 0);
-    rx_hard_fd = nm->create_nmring_hard_rx(&rx_hard_ring, 0);
-    tx_soft_fd = nm->create_nmring_hard_tx(&tx_soft_ring);
-    rx_soft_fd = nm->create_nmring_hard_rx(&rx_soft_ring);
-
-    struct pollfd pfd[4];
+    // max queue number
+    int mq = nm->get_rx_qnum();
+    struct pollfd pfd[mq];
     memset(pfd, 0, sizeof(pfd));
 
-    pfd[0].fd = rx_hard_fd;
-    pfd[1].fd = rx_soft_fd;
-    pfd[2].fd = tx_hard_fd;
-    pfd[4].fd = tx_soft_fd;
+    for (int i = 0; i < mq; i++) {
+        pfd[i].fd = nm->get_fd(i);
+        pfd[i].events = POLLIN|POLLOUT;
+    }
 
-    pfd[0].events = POLLIN;
-    pfd[1].events = POLLIN;
-    pfd[2].events = POLLOUT;
-    pfd[3].events = POLLOUT;
+    
+    printf("max_queue:%d\n", mq);
+    pfd[mq].fd = nm->get_fd_sw();
+    pfd[mq].events = POLLIN|POLLOUT;
+
+    for (int i = 0; i < mq + 1; i++) {
+        printf("%d:%d\n", i, pfd[i].fd);
+    }
 
     int retval;
+    int loop_count = 0;
     for (;;) {
 
-        pfd[0].revents = 0;
-        pfd[1].revents = 0;
-        pfd[2].revents = 0;
-        pfd[3].revents = 0;
-        retval = poll(pfd, 4, -1);
+        retval = poll(pfd, mq+1, -1);
 
         if (retval <= 0) {
             PERROR("poll error");
             return EXIT_FAILURE;
         }
 
-        if (pfd[0].revents & POLLERR) {
+        for (int i = 0; i < mq; i++) {
 
-            MESG("rx_hard poll error");
+            if (pfd[i].revents & POLLERR) {
 
-        } else if (pfd[0].revents & POLLIN) {
+                MESG("rx_hard poll error");
 
-            if (pfd[3].revents & POLLERR) {
+            } else if (pfd[i].revents & POLLIN) {
 
-                MESG("tx_soft poll error");
+                struct netmap_ring* rx = nm->get_rx_ring(i);
 
-            } else if (pfd[3].revents & POLLOUT) {
-                while () {
+                while (rx->avail > 0) {
+
+                    if (pfd[mq].revents & POLLOUT) {
+                        struct netmap_ring* tx = nm->get_tx_ring_sw();
+                        slot_swap(rx, tx);
+                        nm->next(tx);
+                        tx->avail--;
+                        nm->next(rx);
+                        rx->avail--;
+                    } else {
+                        break;
+                    }
+
                 }
+
             }
 
         }
 
-        if (pfd[1].revents & POLLERR) {
+        if (pfd[mq].revents & POLLERR) {
 
             MESG("rx_soft poll error");
 
-        } else if (pfd[1].revents & POLLIN) {
+        } else if (pfd[mq].revents & POLLIN) {
 
-            if (pfd[2].revents & POLLERR) {
+            int dest_ring = loop_count % mq;
+            struct netmap_ring* rx = nm->get_rx_ring_sw();
 
-                MESG("tx_hard poll error");
+            while (rx->avail > 0) {
 
-            } else if (pfd[2].revents & POLLOUT) {
-                ;
+                if (pfd[dest_ring].revents & POLLOUT) {
+                    struct netmap_ring* tx = nm->get_tx_ring(dest_ring);
+                    slot_swap(rx, tx);
+                    nm->next(tx);
+                    tx->avail--;
+                    nm->next(rx);
+                    rx->avail--;
+                } else {
+                    break;
+                }
+
             }
 
         }
 
+        /*
+        for (int i = 0; i < mq + 1; i++) {
+            pfd[i].revents = 0;
+        }
+        */
+        loop_count++;
     }
-    */
-
     return EXIT_SUCCESS;
 }

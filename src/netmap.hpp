@@ -27,7 +27,6 @@
 #include <sys/select.h>
 #endif
 
-
 #include <net/if.h>
 #include <net/if_dl.h>
 #include <net/ethernet.h>
@@ -39,7 +38,6 @@
 class netmap
 {
 public:
-
     // constructor
     netmap();
     // destructor
@@ -48,16 +46,10 @@ public:
     // control methods
     bool open_if(const std::string& ifname);
     bool open_if(const char* ifname);
-    inline bool rxsync(int fd, int ringid);
-    inline bool txsync(int fd, int ringid);
-    inline bool rxsync_block(int fd);
-    inline bool txsync_block(int fd);
-    /*
-    int create_nmring_hard_tx(struct netmap_ring** ring, int qnum);
-    int create_nmring_hard_rx(struct netmap_ring** ring, int qnum);
-    int create_nmring_soft_tx(struct netmap_ring** ring);
-    int create_nmring_soft_rx(struct netmap_ring** ring);
-    */
+    inline bool rxsync(int ringid);
+    inline bool txsync(int ringid);
+    inline bool rxsync_block(int ringid);
+    inline bool txsync_block(int ringid);
 
     // utils methods
     void dump_nmr();
@@ -69,12 +61,26 @@ public:
     uint16_t get_tx_qnum();
     uint16_t get_rx_qnum();
     struct ether_addr* get_mac();
+
     inline void next(struct netmap_ring* ring);
+
     inline size_t get_ethlen(struct netmap_ring* ring);
     inline void set_ethlen(struct netmap_ring* ring, size_t size);
+    inline struct ether_header* get_eth(struct netmap_ring* ring);
+
     inline uint32_t get_cursor(struct netmap_ring* ring);
     inline struct netmap_slot* get_slot(struct netmap_ring* ring);
-    inline struct ether_header* get_eth(struct netmap_ring* ring);
+
+    inline int get_fd(int ringid);
+    inline char* get_mem(int ringid);
+    inline struct netmap_ring* get_tx_ring(int ringid);
+    inline struct netmap_ring* get_rx_ring(int ringid);
+
+    inline int get_fd_sw();
+    inline char* get_mem();
+    inline struct netmap_ring* get_rx_ring_sw();
+    inline struct netmap_ring* get_tx_ring_sw();
+
 
 private:
     uint32_t nm_version;
@@ -125,6 +131,7 @@ netmap::netmap()
 
 netmap::~netmap()
 {
+    //printf("hoge:%d\n", __LINE__);
     for (int i = 0; i < nm_tx_qnum; i++) {
         if (nm_mem_addrs[i] != NULL) {
             _remove_hw_ring(i);
@@ -134,6 +141,12 @@ netmap::~netmap()
     if (nm_mem_addrs != NULL) free(nm_mem_addrs);
     if (nm_rx_rings != NULL) free(nm_rx_rings);
     if (nm_tx_rings != NULL) free(nm_tx_rings);
+
+    _remove_sw_ring();
+    nm_fd_soft = 0;
+    nm_mem_addr_soft = NULL;
+    nm_tx_ring_soft = NULL;
+    nm_rx_ring_soft = NULL;
 }
 
 bool
@@ -221,7 +234,6 @@ netmap::open_if(const char* ifname)
     }
 
     if (_create_nmring(0, NETMAP_SW_RING) == false) {
-        printf("hogehoge\n");
         _remove_sw_ring();
     } else {
         if (debug) printf("(%s:sw) open_fd :%d\n", ifname, nm_fd_soft);
@@ -235,9 +247,9 @@ netmap::open_if(const char* ifname)
 }
 
 inline bool
-netmap::rxsync(int fd, int ringid)
+netmap::rxsync(int ringid)
 {
-    if (ioctl(fd, NIOCRXSYNC, ringid) == -1) {
+    if (ioctl(nm_fds[ringid], NIOCRXSYNC, ringid) == -1) {
         PERROR("ioctl");
         return false;
     } else {
@@ -246,17 +258,15 @@ netmap::rxsync(int fd, int ringid)
 }
 
 inline bool
-netmap::rxsync_block(int fd)
+netmap::rxsync_block(int ringid)
 {
 #ifdef POLL
 
     int retval;
     struct pollfd x[1];
-    x[0].fd = fd;
+    x[0].fd = nm_fds[ringid];
     x[0].events = POLLIN;
-#define POLL_BLOCK -1
-    retval = poll(x, 1, POLL_BLOCK);
-#undef POLL_BLOCK
+    retval = poll(x, 1, -1);
     if (retval == 0) {
         // timeout
         return false;
@@ -272,8 +282,8 @@ netmap::rxsync_block(int fd)
     int retval;
     fd_set s_fd;
     FD_ZERO(&s_fd);
-    FD_SET(fd, &s_fd);
-    retval = select(fd+1, &s_fd, NULL, NULL, NULL);
+    FD_SET(nm_fds[ringid], &s_fd);
+    retval = select(nm_fds[ringid]+1, &s_fd, NULL, NULL, NULL);
     if (retval == 0) {
         //timeout
         return false;
@@ -288,9 +298,9 @@ netmap::rxsync_block(int fd)
 }
 
 inline bool
-netmap::txsync(int fd, int ringid)
+netmap::txsync(int ringid)
 {
-    if (ioctl(fd, NIOCTXSYNC, ringid) == -1) {
+    if (ioctl(nm_fds[ringid], NIOCTXSYNC, ringid) == -1) {
         PERROR("ioctl");
         return false;
     } else {
@@ -299,16 +309,15 @@ netmap::txsync(int fd, int ringid)
 }
 
 inline bool
-netmap::txsync_block(int fd)
+netmap::txsync_block(int ringid)
 {
 #ifdef POLL
+
     int retval;
     struct pollfd x[1];
-    x[0].fd = fd;
+    x[0].fd = nm_fds[ringid];
     x[0].events = POLLOUT;
-#define POLL_BLOCK -1
-    retval = poll(x, 1, POLL_BLOCK);
-#undef POLL_BLOCK
+    retval = poll(x, 1, -1);
     if (retval == 0) {
         // timeout
         return false;
@@ -318,12 +327,14 @@ netmap::txsync_block(int fd)
     } else {
         return true;
     }
+
 #else 
+
     int retval;
     fd_set s_fd;
     FD_ZERO(&s_fd);
-    FD_SET(fd, &s_fd);
-    retval = select(fd+1, NULL, &s_fd, NULL, NULL);
+    FD_SET(nm_fds[ringid], &s_fd);
+    retval = select(nm_fds[ringid]+1, NULL, &s_fd, NULL, NULL);
     if (retval == 0) {
         //timeout
         return false;
@@ -333,6 +344,7 @@ netmap::txsync_block(int fd)
     } else {
         return true;
     }
+
 #endif
 }
 
@@ -381,6 +393,66 @@ inline struct ether_addr*
 netmap::get_mac()
 {
     return &nm_mac;
+}
+
+inline int
+netmap::get_fd_sw()
+{
+    return nm_fd_soft;
+}
+
+inline char*
+netmap::get_mem()
+{
+    return nm_mem_addr_soft;
+}
+
+inline struct netmap_ring*
+netmap::get_rx_ring_sw()
+{
+    return nm_rx_ring_soft;
+}
+
+inline struct netmap_ring*
+netmap::get_tx_ring_sw()
+{
+    return nm_tx_ring_soft;
+}
+
+inline int
+netmap::get_fd(int ringid)
+{
+    if (ringid > 0 && ringid < nm_rx_qnum) {
+        return 0;
+    }
+    return nm_fds[ringid];
+}
+
+inline char*
+netmap::get_mem(int ringid)
+{
+    if (ringid > 0 && ringid < nm_rx_qnum) {
+        return NULL;
+    }
+    return nm_mem_addrs[ringid];
+}
+
+inline struct netmap_ring*
+netmap::get_tx_ring(int ringid)
+{
+    if (ringid > 0 && ringid < nm_tx_qnum) {
+        return NULL;
+    }
+    return nm_tx_rings[ringid];
+}
+
+inline struct netmap_ring*
+netmap::get_rx_ring(int ringid)
+{
+    if (ringid > 0 && ringid < nm_rx_qnum) {
+        return NULL;
+    }
+    return nm_rx_rings[ringid];
 }
 
 
@@ -495,7 +567,7 @@ netmap::unset_promisc()
     return true;
 }
 
-bool netmap::_create_nmring(int qnum, int swhw)
+bool netmap::_create_nmring(int ringid, int swhw)
 {
     // swhw : soft ring or hard ring
     //NETMAP_HW_RING   0x4000
@@ -518,7 +590,7 @@ bool netmap::_create_nmring(int qnum, int swhw)
     //printf("nm_ifname:%s\n", nm_ifname);
     strncpy (nmr.nr_name, nm_ifname, strlen(nm_ifname));
     nmr.nr_version = nm_version;
-    nmr.nr_ringid = (swhw | qnum);
+    nmr.nr_ringid = (swhw | ringid);
 
     if (ioctl(fd, NIOCREGIF, &nmr) < 0) {
         perror("ioctl");
@@ -539,14 +611,14 @@ bool netmap::_create_nmring(int qnum, int swhw)
     nmif = NETMAP_IF(mem, nmr.nr_offset);
 
     if (swhw == NETMAP_HW_RING) {
-        nm_tx_rings[qnum] = NETMAP_TXRING(nmif, qnum);
-        nm_rx_rings[qnum] = NETMAP_RXRING(nmif, qnum);
-        nm_mem_addrs[qnum] = mem;
-        nm_fds[qnum] = fd;
+        nm_tx_rings[ringid] = NETMAP_TXRING(nmif, ringid);
+        nm_rx_rings[ringid] = NETMAP_RXRING(nmif, ringid);
+        nm_mem_addrs[ringid] = mem;
+        nm_fds[ringid] = fd;
         return true;
     } else if (swhw == NETMAP_SW_RING) {
-        nm_tx_ring_soft = NETMAP_TXRING(nmif, 0);
-        nm_rx_ring_soft = NETMAP_RXRING(nmif, 0);
+        nm_rx_ring_soft = NETMAP_RXRING(nmif, nm_rx_qnum);
+        nm_tx_ring_soft = NETMAP_TXRING(nmif, nm_tx_qnum);
         nm_mem_addr_soft = mem;
         nm_fd_soft = fd;
         return true;
@@ -557,53 +629,19 @@ bool netmap::_create_nmring(int qnum, int swhw)
     return false;
 }
 
-/*
-int
-netmap::create_nmring_hard_tx(struct netmap_ring** ring, int qnum)
-{
-    int rxtx = NETMAP_TX;
-    int swhw = NETMAP_HW_RING;
-    return _create_nmring(ring, qnum, rxtx, swhw);
-}
-
-int
-netmap::create_nmring_hard_rx(struct netmap_ring** ring, int qnum)
-{
-    int rxtx = NETMAP_RX;
-    int swhw = NETMAP_HW_RING;
-    return _create_nmring(ring, qnum, rxtx, swhw);
-}
-
-int
-netmap::create_nmring_soft_tx(struct netmap_ring** ring)
-{
-    int rxtx = NETMAP_TX;
-    int swhw = NETMAP_SW_RING;
-    return _create_nmring(ring, 0, rxtx, swhw);
-}
-
-int
-netmap::create_nmring_soft_rx(struct netmap_ring** ring)
-{
-    int rxtx = NETMAP_RX;
-    int swhw = NETMAP_SW_RING;
-    return _create_nmring(ring, 0, rxtx, swhw);
-}
-*/
-
 bool
-netmap::_remove_hw_ring(int qnum)
+netmap::_remove_hw_ring(int ringid)
 {
-    if (munmap(nm_mem_addrs, nm_memsize) != 0) {
+    if (munmap(nm_mem_addrs[ringid], nm_memsize) != 0) {
         PERROR("munmap");
         return false;
     }
-    nm_mem_addrs[qnum] = NULL;
+    nm_mem_addrs[ringid] = NULL;
 
-    close(nm_fds[qnum]);
-    nm_fds[qnum] = 0;
-    nm_rx_rings[qnum] = NULL;
-    nm_tx_rings[qnum] = NULL;
+    close(nm_fds[ringid]);
+    nm_fds[ringid] = 0;
+    nm_rx_rings[ringid] = NULL;
+    nm_tx_rings[ringid] = NULL;
     return true;
 }
 
