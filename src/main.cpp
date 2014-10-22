@@ -82,6 +82,8 @@ int main(int argc, char** argv)
 
     int retval;
     int loop_count = 0;
+    int rx_avail = 0;
+    int tx_avail = 0;
     for (;;) {
 
         retval = poll(pfd, mq+1, -1);
@@ -101,16 +103,18 @@ int main(int argc, char** argv)
             } else if (pfd[i].revents & POLLIN) {
 
                 struct netmap_ring* rx = nm->get_rx_ring(i);
+                struct netmap_ring* tx = nm->get_tx_ring_sw();
+                rx_avail = nm->get_avail(rx);
+                tx_avail = nm->get_avail(tx);
 
-                while (rx->avail > 0) {
+                while (rx_avail > 0) {
 
-                    if (pfd[mq].revents & POLLOUT) {
-                        struct netmap_ring* tx = nm->get_tx_ring_sw();
+                    if (pfd[mq].revents & POLLOUT && tx_avail > 0) {
                         slot_swap(rx, tx);
                         nm->next(tx);
-                        tx->avail--;
+                        tx_avail--;
                         nm->next(rx);
-                        rx->avail--;
+                        rx_avail--;
                     } else {
                         break;
                     }
@@ -130,16 +134,18 @@ int main(int argc, char** argv)
 
             int dest_ring = loop_count % mq;
             struct netmap_ring* rx = nm->get_rx_ring_sw();
+            struct netmap_ring* tx = nm->get_tx_ring(dest_ring);
+            rx_avail = nm->get_avail(rx);
+            tx_avail = nm->get_avail(tx);
 
-            while (rx->avail > 0) {
+            while (rx_avail > 0) {
 
-                if (pfd[dest_ring].revents & POLLOUT) {
-                    struct netmap_ring* tx = nm->get_tx_ring(dest_ring);
+                if (pfd[dest_ring].revents & POLLOUT && tx_avail > 0) {
                     slot_swap(rx, tx);
                     nm->next(tx);
-                    tx->avail--;
+                    tx_avail--;
                     nm->next(rx);
-                    rx->avail--;
+                    rx_avail--;
                 } else {
                     break;
                 }

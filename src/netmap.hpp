@@ -28,7 +28,6 @@
 #endif
 
 #include <net/if.h>
-
 #ifndef __linux__
 #include <net/if_dl.h>
 #endif
@@ -84,6 +83,7 @@ public:
     inline char* get_mem();
     inline struct netmap_ring* get_rx_ring_sw();
     inline struct netmap_ring* get_tx_ring_sw();
+    inline uint32_t get_avail(struct netmap_ring* ring);
 
 
 private:
@@ -213,8 +213,18 @@ netmap::open_if(const char* ifname)
 
     get_mac_addr(ifname, &nm_mac);
 
+#ifndef __linux__
     nm_oui = nm_mac.octet[0]<<16 | nm_mac.octet[1]<<8 | nm_mac.octet[2];
     nm_bui = nm_mac.octet[3]<<16 | nm_mac.octet[4]<<8 | nm_mac.octet[5];
+#else
+    nm_oui = nm_mac.ether_addr_octet[0]<<16 |
+             nm_mac.ether_addr_octet[1]<<8  |
+             nm_mac.ether_addr_octet[2];
+    nm_bui = nm_mac.ether_addr_octet[3]<<16 |
+             nm_mac.ether_addr_octet[4]<<8  |
+             nm_mac.ether_addr_octet[5];
+#endif
+
     if (debug) printf("%s_mac_address->%06x:%06x\n", nm_ifname, nm_oui, nm_bui);
 
     for (int i = 0; i < nm_rx_qnum; i++) {
@@ -367,7 +377,11 @@ netmap::get_slot(struct netmap_ring* ring)
 inline void
 netmap::next(struct netmap_ring* ring)
 {
+#if NETMAP_API > 4
+    ring->head = ring->cur = nm_ring_next (ring, ring->cur);
+#else
     ring->cur = NETMAP_RING_NEXT(ring, ring->cur);
+#endif
     return;
 }
 
@@ -459,6 +473,16 @@ netmap::get_rx_ring(int ringid)
     return nm_rx_rings[ringid];
 }
 
+inline uint32_t
+netmap::get_avail(struct netmap_ring* ring)
+{
+#if NETMAP_API > 4
+    return nm_ring_space(ring);
+#else
+    return ring->avail;
+#endif
+}
+
 
 void
 netmap::dump_nmr()
@@ -504,6 +528,8 @@ netmap::get_rx_qnum()
 bool
 netmap::set_promisc()
 {
+#ifndef __linux__
+
     int fd;
     struct ifreq ifr;
     memset(&ifr, 0, sizeof(ifr));
@@ -539,11 +565,44 @@ netmap::set_promisc()
     close(fd);
 
     return true;
+
+#else
+
+    int fd;
+    struct ifreq ifr;
+    char* ifname = get_ifname();
+    memset(&ifr, 0, sizeof(ifr));
+
+    fd = socket (AF_INET, SOCK_DGRAM, 0);
+    strncpy (ifr.ifr_name, ifname, strlen(ifname));
+
+    if (ioctl (fd, SIOCGIFFLAGS, &ifr) != 0) {
+        PERROR("ioctl");
+        MESG("failed to get interface status");
+        close(fd);
+        return false;
+    }
+
+    ifr.ifr_flags |= IFF_PROMISC;
+
+    if (ioctl (fd, SIOCSIFFLAGS, &ifr) != 0) {
+        PERROR("ioctl");
+        MESG("failed to set interface status");
+        close(fd);
+        return false;
+    }
+
+    close(fd);
+    return true;
+
+#endif
 }
 
 bool
 netmap::unset_promisc()
 {
+#ifndef __linux__
+
     int fd;
     struct ifreq ifr;
 
@@ -568,6 +627,39 @@ netmap::unset_promisc()
     }
     close(fd);
     
+    return true;
+
+#else
+
+    int fd;
+    struct ifreq ifr;
+    char* ifname = get_ifname();
+    memset(&ifr, 0, sizeof(ifr));
+
+    fd = socket (AF_INET, SOCK_DGRAM, 0);
+    strncpy (ifr.ifr_name, ifname, strlen(ifname));
+
+    if (ioctl (fd, SIOCGIFFLAGS, &ifr) != 0) {
+        PERROR("ioctl");
+        MESG("failed to get interface status");
+        close(fd);
+        return false;
+    }
+
+    ifr.ifr_flags &= ~IFF_PROMISC;
+
+    if (ioctl (fd, SIOCSIFFLAGS, &ifr) != 0) {
+        PERROR("ioctl");
+        MESG("failed to set interface status");
+        close(fd);
+        return false;
+    }
+
+    close(fd);
+    return true;
+
+#endif
+
     return true;
 }
 

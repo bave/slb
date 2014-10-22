@@ -5,8 +5,10 @@
 #include <set>
 
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <net/ethernet.h>
 
+#include <net/if.h>
 #ifndef __linux__
 #include <net/if_dl.h>
 #endif
@@ -89,38 +91,39 @@ bool is_exist_if(std::vector<std::string>& v, std::string& s)
 bool get_mac_addr(const char* ifname, struct ether_addr* retval)
 {
 #ifndef __linux
-    struct ifaddrs *ifs;
-    struct ifaddrs *ifp;
-    struct sockaddr_dl* dl;
+    {
+        struct ifaddrs *ifs;
+        struct ifaddrs *ifp;
+        struct sockaddr_dl* dl;
 
-    if (getifaddrs(&ifs) != 0) {
-        PERROR("getifaddrs");
-        MESG("unabe to get interface info for %s", ifname);
-        return false;
-    }
-
-    for (ifp=ifs; ifp; ifp=ifp->ifa_next) {
-        int ifp_family = ifp->ifa_addr->sa_family;
-
-        if (ifp->ifa_addr == NULL) {
-            continue;
-        } else if (ifp_family != AF_LINK) {
-            continue;
+        if (getifaddrs(&ifs) != 0) {
+            PERROR("getifaddrs");
+            MESG("unabe to get interface info for %s", ifname);
+            return false;
         }
 
-        dl = (struct sockaddr_dl*)ifp->ifa_addr;
+        for (ifp=ifs; ifp; ifp=ifp->ifa_next) {
+            int ifp_family = ifp->ifa_addr->sa_family;
 
-        if (strncmp(ifname, dl->sdl_data, dl->sdl_nlen) == 0) {
-            memcpy(retval, LLADDR(dl), ETHER_ADDR_LEN);
-            break;
+            if (ifp->ifa_addr == NULL) {
+                continue;
+            } else if (ifp_family != AF_LINK) {
+                continue;
+            }
+
+            dl = (struct sockaddr_dl*)ifp->ifa_addr;
+
+            if (strncmp(ifname, dl->sdl_data, dl->sdl_nlen) == 0) {
+                memcpy(retval, LLADDR(dl), ETHER_ADDR_LEN);
+                break;
+            }
         }
+        freeifaddrs(ifs);
+        return true;
     }
-    freeifaddrs(ifs);
-    return true;
 #else
     {
         int fd = 0;
-        int retval = 0;
         struct ifreq ifr;
         memset(&ifr, 0, sizeof(ifr));
 
@@ -135,8 +138,8 @@ bool get_mac_addr(const char* ifname, struct ether_addr* retval)
             return false;
         }
         close(fd);
-        memcpy(&nm_mac, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
-        return true
+        memcpy(retval, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
+        return true;
     }
 #endif
 }
@@ -145,11 +148,13 @@ std::vector<std::string>
 get_ifname_list()
 {
     //getmac
+    std::vector<std::string> v;
+
+#ifndef __linux__
+
+    std::set<std::string> s;
     struct ifaddrs *ifs;
     struct ifaddrs *ifp;
-    //struct sockaddr_dl* dl;
-    std::set<std::string> s;
-    std::vector<std::string> v;
 
     if (getifaddrs(&ifs) != 0) {
         PERROR("getifaddrs");
@@ -172,5 +177,33 @@ get_ifname_list()
     for (it = s.begin(); it != s.end(); it++) {
         v.push_back(*it);
     }
+
+#else
+
+    std::set<std::string> s;
+    struct ifaddrs *ifs;
+    struct ifaddrs *ifp;
+
+    if (getifaddrs(&ifs) != 0) {
+        PERROR("getifaddrs");
+        exit(EXIT_FAILURE);
+    }
+
+    for (ifp=ifs; ifp; ifp=ifp->ifa_next) {
+        if (ifp->ifa_addr == NULL) {
+            continue;
+        }
+        s.insert(std::string(ifp->ifa_name));
+    }
+    freeifaddrs(ifs);
+
+    std::set<std::string>::iterator it;
+    for (it = s.begin(); it != s.end(); it++) {
+        std::cout << *it << std::endl;
+        v.push_back(*it);
+    }
+
+#endif
+
     return v;
 }
