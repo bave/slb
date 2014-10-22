@@ -233,7 +233,7 @@ netmap::open_if(const char* ifname)
         }
     }
 
-    if (_create_nmring(0, NETMAP_SW_RING) == false) {
+    if (_create_nmring(nm_rx_qnum, NETMAP_SW_RING) == false) {
         _remove_sw_ring();
     } else {
         if (debug) printf("(%s:sw) open_fd :%d\n", ifname, nm_fd_soft);

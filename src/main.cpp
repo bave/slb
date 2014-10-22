@@ -91,6 +91,7 @@ int main(int argc, char** argv)
             return EXIT_FAILURE;
         }
 
+        // nic -> host
         for (int i = 0; i < mq; i++) {
 
             if (pfd[i].revents & POLLERR) {
@@ -120,6 +121,7 @@ int main(int argc, char** argv)
 
         }
 
+        // nic -> host
         if (pfd[mq].revents & POLLERR) {
 
             MESG("rx_soft poll error");
@@ -151,7 +153,12 @@ int main(int argc, char** argv)
             pfd[i].revents = 0;
         }
         */
+
         loop_count++;
     }
+
     return EXIT_SUCCESS;
 }
+
+
+
