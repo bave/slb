@@ -6,7 +6,10 @@
 
 #include <sys/socket.h>
 #include <net/ethernet.h>
+
+#ifndef __linux__
 #include <net/if_dl.h>
+#endif
 
 #include <ifaddrs.h>
  
@@ -68,6 +71,7 @@ bool is_exist_if(std::vector<std::string>& v, std::string& s)
 
 bool get_mac_addr(const char* ifname, struct ether_addr* retval)
 {
+#ifndef __linux
     struct ifaddrs *ifs;
     struct ifaddrs *ifp;
     struct sockaddr_dl* dl;
@@ -96,6 +100,28 @@ bool get_mac_addr(const char* ifname, struct ether_addr* retval)
     }
     freeifaddrs(ifs);
     return true;
+#else
+    {
+        int fd = 0;
+        int retval = 0;
+        struct ifreq ifr;
+        memset(&ifr, 0, sizeof(ifr));
+
+        fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd < 0) {
+            return false;
+        }
+        ifr.ifr_addr.sa_family = AF_INET;
+        strncpy(ifr.ifr_name, ifname, strlen(ifname));
+        if (ioctl(fd, SIOCGIFHWADDR, &ifr) < 0) {
+            close(fd);
+            return false;
+        }
+        close(fd);
+        memcpy(&nm_mac, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
+        return true
+    }
+#endif
 }
 
 std::vector<std::string>
