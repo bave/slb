@@ -28,7 +28,11 @@
 #endif
 
 #include <net/if.h>
+
+#ifndef __linux__
 #include <net/if_dl.h>
+#endif
+
 #include <net/ethernet.h>
 
 #include <net/netmap.h>

@@ -42,6 +42,7 @@ swap_mac(struct ether_addr* mac1, struct ether_addr* mac2)
 void
 printmac(const char* prefix, struct ether_addr* mac, const char* suffix)
 {
+#ifndef __linux__
     //struct ether_addr { 
     //    u_char octet[ETHER_ADDR_LEN];
     //} __packed;
@@ -55,6 +56,22 @@ printmac(const char* prefix, struct ether_addr* mac, const char* suffix)
     printf("%02x " , mac->octet[5]);
     printf("%s"  , suffix);
     return;
+#else
+    /*
+    // linux
+    struct ether_addr {
+       u_int8_t ether_addr_octet[ETH_ALEN];
+    } __attribute__ ((__packed__));
+    */
+    printf("%s"    , prefix);
+    printf("%02x:" , mac->ether_addr_octet[0]);
+    printf("%02x:" , mac->ether_addr_octet[1]);
+    printf("%02x:" , mac->ether_addr_octet[2]);
+    printf("%02x:" , mac->ether_addr_octet[3]);
+    printf("%02x:" , mac->ether_addr_octet[4]);
+    printf("%02x " , mac->ether_addr_octet[5]);
+    printf("%s"  , suffix);
+#endif
 }
 
 bool is_exist_if(std::vector<std::string>& v, std::string& s)
