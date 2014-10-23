@@ -84,6 +84,8 @@ int main(int argc, char** argv)
     int loop_count = 0;
     int rx_avail = 0;
     int tx_avail = 0;
+    struct netmap_ring* rx = NULL;
+    struct netmap_ring* tx = NULL;
     for (;;) {
 
         retval = poll(pfd, mq+1, -1);
@@ -93,21 +95,25 @@ int main(int argc, char** argv)
             return EXIT_FAILURE;
         }
 
+
         // nic -> host
         for (int i = 0; i < mq; i++) {
+
 
             if (pfd[i].revents & POLLERR) {
 
                 MESG("rx_hard poll error");
 
             } else if (pfd[i].revents & POLLIN) {
-
-                struct netmap_ring* rx = nm->get_rx_ring(i);
-                struct netmap_ring* tx = nm->get_tx_ring_sw();
+                    
+                rx = nm->get_rx_ring(i);
+                tx = nm->get_tx_ring_sw();
                 rx_avail = nm->get_avail(rx);
                 tx_avail = nm->get_avail(tx);
 
                 while (rx_avail > 0) {
+                    printf("nic->host:rx_avail:%d\n", rx_avail);
+                    printf("nic->host:tx_avail:%d\n", tx_avail);
 
                     if (pfd[mq].revents & POLLOUT && tx_avail > 0) {
                         slot_swap(rx, tx);
@@ -125,7 +131,8 @@ int main(int argc, char** argv)
 
         }
 
-        // nic -> host
+
+        // host -> nic
         if (pfd[mq].revents & POLLERR) {
 
             MESG("rx_soft poll error");
@@ -133,13 +140,16 @@ int main(int argc, char** argv)
         } else if (pfd[mq].revents & POLLIN) {
 
             int dest_ring = loop_count % mq;
-            struct netmap_ring* rx = nm->get_rx_ring_sw();
-            struct netmap_ring* tx = nm->get_tx_ring(dest_ring);
+            rx = nm->get_rx_ring_sw();
+            tx = nm->get_tx_ring(dest_ring);
             rx_avail = nm->get_avail(rx);
             tx_avail = nm->get_avail(tx);
+            printf("dest_ring_num:%d\n", dest_ring);
 
             while (rx_avail > 0) {
 
+                printf("host->nic:rx_avail:%d\n", rx_avail);
+                printf("host->nic:tx_avail:%d\n", tx_avail);
                 if (pfd[dest_ring].revents & POLLOUT && tx_avail > 0) {
                     slot_swap(rx, tx);
                     nm->next(tx);

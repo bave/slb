@@ -2,6 +2,8 @@
 #ifndef __netmap_hpp__
 #define __netmap_hpp__
 
+#define USE_NETMAP_API_11
+
 #include "common.hpp"
 
 #include <iostream>
@@ -686,7 +688,17 @@ bool netmap::_create_nmring(int ringid, int swhw)
     //printf("nm_ifname:%s\n", nm_ifname);
     strncpy (nmr.nr_name, nm_ifname, strlen(nm_ifname));
     nmr.nr_version = nm_version;
-    nmr.nr_ringid = (swhw | ringid);
+    //nmr.nr_ringid = swhw | ringid | NETMAP_NO_TX_POLL | NETMAP_DO_RX_POLL;
+    nmr.nr_ringid = swhw | ringid;
+#if NETMAP_API > 4
+    if (swhw == NETMAP_SW_RING) {
+        nmr.nr_flags = NR_REG_SW;
+    } else if (swhw == NETMAP_HW_RING) {
+        nmr.nr_flags = NR_REG_ONE_NIC;
+    } else {
+        nmr.nr_flags = 0;
+    }
+#endif
 
     if (ioctl(fd, NIOCREGIF, &nmr) < 0) {
         perror("ioctl");
