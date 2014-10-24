@@ -1,3 +1,5 @@
+//#define USE_NETMAP_API_11
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,6 +91,7 @@ int main(int argc, char** argv)
     for (;;) {
 
         retval = poll(pfd, mq+1, -1);
+        printf("hoge\n");
 
         if (retval <= 0) {
             PERROR("poll error");
