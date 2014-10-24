@@ -178,7 +178,9 @@ int main(int argc, char** argv)
 
 #ifdef USE_NETMAP_API_11
         printf("%d\n", __LINE__);
-        nm->txsync_hw(0);
+        for (int i = 0; i < mq; i++) {
+            nm->txsync_hw(i);
+        }
         nm->txsync_sw();
 #endif
     }
