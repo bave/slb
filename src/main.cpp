@@ -178,13 +178,8 @@ int main(int argc, char** argv)
 
 #ifdef USE_NETMAP_API_11
         printf("%d\n", __LINE__);
-        //retval = poll(pfd_tx, mq+1, -1);
-        nm->txsync_hw_block(0);
-        printf("%d\n", __LINE__);
-        nm->txsync_sw_block();
-        //nm->txsync_hw(0);
-        //nm->txsync_sw();
-        printf("hage\n");
+        nm->txsync_hw(0);
+        nm->txsync_sw();
 #endif
     }
 
