@@ -177,11 +177,23 @@ int main(int argc, char** argv)
         loop_count++;
 
 #ifdef USE_NETMAP_API_11
-        printf("%d\n", __LINE__);
+        poll(pfd_tx, mq+1, -1);
+        /*
+        // ioctl(TXSYNC) test
         for (int i = 0; i < mq; i++) {
             nm->txsync_hw(i);
         }
         nm->txsync_sw();
+        */
+
+
+        /*
+        // poll per interface tx test
+        for (int i = 0; i < mq; i++) {
+            nm->txsync_hw_block(i);
+        }
+        nm->txsync_sw_block();
+        */
 #endif
     }
 

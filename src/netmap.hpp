@@ -794,7 +794,7 @@ bool netmap::_create_nmring(int ringid, int swhw)
     strncpy (nmr.nr_name, nm_ifname, strlen(nm_ifname));
     nmr.nr_version = nm_version;
 #if NETMAP_API > 4
-    nmr.nr_ringid = swhw | ringid | NETMAP_NO_TX_POLL;
+    nmr.nr_ringid = swhw | ringid;
     if (swhw == NETMAP_SW_RING) {
         nmr.nr_flags = NR_REG_SW;
     } else if (swhw == NETMAP_HW_RING) {
@@ -808,6 +808,7 @@ bool netmap::_create_nmring(int ringid, int swhw)
     } else if (swhw == NETMAP_HW_RING) {
         nmr.nr_ringid = swhw | ringid;
     } else {
+        ;
     }
 
 #endif
@@ -864,7 +865,6 @@ netmap::_remove_hw_ring(int ringid)
     nm_tx_rings[ringid] = NULL;
     return true;
 }
-
 
 bool
 netmap::_remove_sw_ring()
