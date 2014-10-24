@@ -50,10 +50,14 @@ public:
     // control methods
     bool open_if(const std::string& ifname);
     bool open_if(const char* ifname);
-    inline bool rxsync(int ringid);
-    inline bool txsync(int ringid);
-    inline bool rxsync_block(int ringid);
-    inline bool txsync_block(int ringid);
+    inline bool rxsync_sw();
+    inline bool rxsync_hw(int ringid);
+    inline bool txsync_sw();
+    inline bool txsync_hw(int ringid);
+    inline bool txsync_sw_block();
+    inline bool txsync_hw_block(int ringid);
+    inline bool rxsync_sw_block();
+    inline bool rxsync_hw_block(int ringid);
 
     // utils methods
     void dump_nmr();
@@ -257,12 +261,22 @@ netmap::open_if(const char* ifname)
         if (debug) printf("(%s:sw) tx_ring :%p\n", ifname, nm_tx_ring_soft);
     }
 
-
     return true;
 }
 
 inline bool
-netmap::rxsync(int ringid)
+netmap::rxsync_sw()
+{
+    if (ioctl(nm_fd_soft, NIOCRXSYNC, nm_rx_qnum) == -1) {
+        PERROR("ioctl");
+        return false;
+    } else {
+        return true;
+    }
+}
+
+inline bool
+netmap::rxsync_hw(int ringid)
 {
     if (ioctl(nm_fds[ringid], NIOCRXSYNC, ringid) == -1) {
         PERROR("ioctl");
@@ -273,7 +287,47 @@ netmap::rxsync(int ringid)
 }
 
 inline bool
-netmap::rxsync_block(int ringid)
+netmap::rxsync_sw_block()
+{
+#ifdef POLL
+
+    int retval;
+    struct pollfd x[1];
+    x[0].fd = nm_fd_soft;
+    x[0].events = POLLIN;
+    retval = poll(x, 1, -1);
+    if (retval == 0) {
+        // timeout
+        return false;
+    } else if (retval < 0) {
+        PERROR("poll");
+        return false;
+    } else {
+        return true;
+    }
+
+#else 
+
+    int retval;
+    fd_set s_fd;
+    FD_ZERO(&s_fd);
+    FD_SET(nm_fd_soft, &s_fd);
+    retval = select(nm_fd_soft+1, &s_fd, NULL, NULL, NULL);
+    if (retval == 0) {
+        //timeout
+        return false;
+    } else if (retval < 0) {
+        PERROR("select");
+        return false;
+    } else {
+        return true;
+    }
+
+#endif
+}
+
+inline bool
+netmap::rxsync_hw_block(int ringid)
 {
 #ifdef POLL
 
@@ -313,7 +367,18 @@ netmap::rxsync_block(int ringid)
 }
 
 inline bool
-netmap::txsync(int ringid)
+netmap::txsync_sw()
+{
+    if (ioctl(nm_fd_soft, NIOCTXSYNC, nm_tx_qnum) == -1) {
+        PERROR("ioctl");
+        return false;
+    } else {
+        return true;
+    }
+}
+
+inline bool
+netmap::txsync_hw(int ringid)
 {
     if (ioctl(nm_fds[ringid], NIOCTXSYNC, ringid) == -1) {
         PERROR("ioctl");
@@ -324,7 +389,47 @@ netmap::txsync(int ringid)
 }
 
 inline bool
-netmap::txsync_block(int ringid)
+netmap::txsync_sw_block()
+{
+#ifdef POLL
+
+    int retval;
+    struct pollfd x[1];
+    x[0].fd = nm_fd_soft;
+    x[0].events = POLLOUT;
+    retval = poll(x, 1, -1);
+    if (retval == 0) {
+        // timeout
+        return false;
+    } else if (retval < 0) {
+        PERROR("poll");
+        return false;
+    } else {
+        return true;
+    }
+
+#else 
+
+    int retval;
+    fd_set s_fd;
+    FD_ZERO(&s_fd);
+    FD_SET(nm_fd_soft, &s_fd);
+    retval = select(nm_fd_soft, NULL, &s_fd, NULL, NULL);
+    if (retval == 0) {
+        //timeout
+        return false;
+    } else if (retval < 0) {
+        PERROR("select");
+        return false;
+    } else {
+        return true;
+    }
+
+#endif
+}
+
+inline bool
+netmap::txsync_hw_block(int ringid)
 {
 #ifdef POLL
 
@@ -382,6 +487,7 @@ netmap::next(struct netmap_ring* ring)
     ring->head = ring->cur = nm_ring_next (ring, ring->cur);
 #else
     ring->cur = NETMAP_RING_NEXT(ring, ring->cur);
+    ring->avail--;
 #endif
     return;
 }
@@ -687,9 +793,8 @@ bool netmap::_create_nmring(int ringid, int swhw)
     //printf("nm_ifname:%s\n", nm_ifname);
     strncpy (nmr.nr_name, nm_ifname, strlen(nm_ifname));
     nmr.nr_version = nm_version;
-    nmr.nr_ringid = swhw | ringid;
 #if NETMAP_API > 4
-    nmr.nr_ringid = nmr.nr_ringid  | NETMAP_NO_TX_POLL | NETMAP_DO_RX_POLL;
+    nmr.nr_ringid = swhw | ringid | NETMAP_NO_TX_POLL;
     if (swhw == NETMAP_SW_RING) {
         nmr.nr_flags = NR_REG_SW;
     } else if (swhw == NETMAP_HW_RING) {
@@ -697,6 +802,14 @@ bool netmap::_create_nmring(int ringid, int swhw)
     } else {
         nmr.nr_flags = 0;
     }
+#else
+    if (swhw == NETMAP_SW_RING) {
+        nmr.nr_ringid = swhw;
+    } else if (swhw == NETMAP_HW_RING) {
+        nmr.nr_ringid = swhw | ringid;
+    } else {
+    }
+
 #endif
 
     if (ioctl(fd, NIOCREGIF, &nmr) < 0) {
