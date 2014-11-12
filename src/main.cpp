@@ -3,12 +3,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <poll.h>
+#include <getopt.h>
+
 #include <unistd.h>
 
 #include "common.hpp"
 #include "ether.hpp"
-#include "netmap.hpp"
+#include "switch.hpp"
+#include "property.hpp"
 
 inline void
 slot_swap(struct netmap_ring* rxring, struct netmap_ring* txring)
@@ -18,7 +20,7 @@ slot_swap(struct netmap_ring* rxring, struct netmap_ring* txring)
     struct netmap_slot* tx_slot =
         ((netmap_slot*)&txring->slot[txring->cur]);
 
-#ifdef USERLAND_COPY
+#ifdef DEEPCOPY
 
     struct ether_header* rx_eth =
         (struct ether_header*)NETMAP_BUF(rxring, rx_slot->buf_idx);
@@ -39,163 +41,98 @@ slot_swap(struct netmap_ring* rxring, struct netmap_ring* txring)
 
     tx_slot->len = rx_slot->len;
 
+    /*
     if (debug) { 
         uint8_t* tx_eth = (uint8_t*)NETMAP_BUF(txring, tx_slot->buf_idx);
         pktdump(tx_eth, tx_slot->len);
     }
-    /*
     */
 
     return;
 }
 
+void
+usage(char* prog_name)
+{
+    printf("%s\n", prog_name);
+    printf("  Must..\n");
+    printf("    -f [configuration file]\n");
+    printf("  Option..\n");
+    printf("    -h/? : help usage information\n");
+#ifdef DEBUG
+    printf("    -v : verbose mode\n");
+#endif
+    printf("\n");
+    return;
+}
+
 int main(int argc, char** argv)
 {
-    debug = true;
-    if (argc != 2) {
-        if (argc != 2) {
-            printf("%s [interface_name]\n", argv[0]);
-            return EXIT_FAILURE;
+    debug = false;
+    int opt;
+    int option_index;
+    std::string opt_f;
+
+    struct option long_options[] = {
+        {"config", no_argument,  NULL, 'f'},
+        {"help",   no_argument,  NULL, 'h'},
+#ifdef DEBUG
+        {"verbose", no_argument, NULL, 'v'},
+#endif
+        {0, 0, 0, 0},
+    };
+
+    while ((opt = getopt_long(argc, argv,
+                "f:hv?", long_options, &option_index)) != -1)
+    {
+        switch (opt)
+        {
+        case 'f':
+            opt_f = optarg;
+            break;
+
+        case 'h':
+        case '?':
+            usage(argv[0]);
+            exit(EXIT_SUCCESS);
+            break;
+
+#ifdef DEBUG
+        case 'v':
+            debug = true;
+            break;
+#endif
+
+        default:
+            exit(EXIT_FAILURE);
         }
     }
 
+    if (opt_f.size() == 0) {
+        usage(argv[0]);
+        exit(EXIT_FAILURE);
+    }
+    property prop;
+    prop.read(opt_f);
+    std::string left = prop.get("left");
+    std::string right = prop.get("right");
+
+    if (left.size() == 0 || right.size() == 0) {
+        MESG("can't find the left/right Network Interface in config");
+        exit(EXIT_FAILURE);
+    } else {
+        if (debug) {
+            std::cout << "L-NIC: " << left << std::endl;
+            std::cout << "R-NIC: " << right << std::endl;
+        }
+    }
+
+    /*
     netmap* nm;
     nm = new netmap();
     if (nm->open_if(argv[1]) == false) exit(1);
-
-    //nm->dump_nmr();
-
-    // max queue number
-    int mq = nm->get_rx_qnum();
-    struct pollfd pfd_rx[mq];
-    struct pollfd pfd_tx[mq];
-    memset(pfd_rx, 0, sizeof(pfd_rx));
-    memset(pfd_tx, 0, sizeof(pfd_tx));
-
-    for (int i = 0; i < mq; i++) {
-        pfd_rx[i].fd = nm->get_fd(i);
-        pfd_rx[i].events = POLLIN;
     }
-
-    for (int i = 0; i < mq; i++) {
-        pfd_tx[i].fd = nm->get_fd(i);
-        pfd_tx[i].events = POLLOUT;
-    }
-    
-    printf("max_queue:%d\n", mq);
-    pfd_rx[mq].fd = nm->get_fd_sw();
-    pfd_rx[mq].events = POLLIN;
-    pfd_tx[mq].fd = nm->get_fd_sw();
-    pfd_tx[mq].events = POLLOUT;
-
-    for (int i = 0; i < mq + 1; i++) {
-        printf("%d:%d\n", i, pfd_rx[i].fd);
-    }
-
-    int retval;
-    int loop_count = 0;
-    int rx_avail = 0;
-    int tx_avail = 0;
-    struct netmap_ring* rx = NULL;
-    struct netmap_ring* tx = NULL;
-
-    retval = poll(pfd_tx, mq+1, -1);
-    for (;;) {
-
-        retval = poll(pfd_rx, mq+1, -1);
-
-        if (retval <= 0) {
-            PERROR("poll error");
-            return EXIT_FAILURE;
-        }
-
-
-        // nic -> host
-        for (int i = 0; i < mq; i++) {
-
-            if (pfd_rx[i].revents & POLLERR) {
-
-                MESG("rx_hard poll error");
-
-            } else if (pfd_rx[i].revents & POLLIN) {
-
-                rx = nm->get_rx_ring(i);
-                tx = nm->get_tx_ring_sw();
-                rx_avail = nm->get_avail(rx);
-                tx_avail = nm->get_avail(tx);
-
-                while (rx_avail > 0) {
-                    printf("nic->host:rx_avail:%d\n", rx_avail);
-                    printf("nic->host:tx_avail:%d\n", tx_avail);
-                    if (tx_avail > 0) {
-                        slot_swap(rx, tx);
-                        nm->next(tx);
-                        tx_avail--;
-                        nm->next(rx);
-                        rx_avail--;
-                    } else {
-                        break;
-                    }
-                }
-            }
-        }
-
-
-        // host -> nic
-        if (pfd_rx[mq].revents & POLLERR) {
-
-            MESG("rx_soft poll error");
-
-        } else if (pfd_rx[mq].revents & POLLIN) {
-
-            int dest_ring = loop_count % mq;
-            rx = nm->get_rx_ring_sw();
-            tx = nm->get_tx_ring(dest_ring);
-            rx_avail = nm->get_avail(rx);
-            tx_avail = nm->get_avail(tx);
-
-            while (rx_avail > 0) {
-                printf("host->nic:rx_avail:%d\n", rx_avail);
-                printf("host->nic:tx_avail:%d\n", tx_avail);
-                if (tx_avail > 0) {
-                    slot_swap(rx, tx);
-                    nm->next(tx);
-                    tx_avail--;
-                    nm->next(rx);
-                    rx_avail--;
-                } else {
-                    break;
-                }
-            }
-        }
-
-        for (int i = 0; i < mq + 1; i++) {
-            pfd_rx[i].revents = 0;
-            pfd_tx[i].revents = 0;
-        }
-
-        loop_count++;
-
-#ifdef USE_NETMAP_API_11
-        poll(pfd_tx, mq+1, -1);
-        /*
-        // ioctl(TXSYNC) test
-        for (int i = 0; i < mq; i++) {
-            nm->txsync_hw(i);
-        }
-        nm->txsync_sw();
-        */
-
-
-        /*
-        // poll per interface tx test
-        for (int i = 0; i < mq; i++) {
-            nm->txsync_hw_block(i);
-        }
-        nm->txsync_sw_block();
-        */
-#endif
-    }
+    */
 
     return EXIT_SUCCESS;
 }

@@ -1,6 +1,4 @@
-
-#ifndef __common_hpp__
-#define __common_hpp__
+#pragma once
 
 #include <stdio.h>
 #include <string.h>
@@ -47,9 +45,11 @@ void pktdump(uint8_t* buf, int len)
     char t[128];
     char hex[] = "0123456789abcdef";
     fprintf(stderr, "--- %d bytes at %p\n", len, buf);
+    /*
     if (len > 160) {
         len = 160;
     }
+    */
     for (i = 0; i < len; i++) {
         uint8_t c = (uint8_t)buf[i];
         int o = i % 16;
@@ -135,22 +135,20 @@ split(const std::string& src, const char *c)
     std::vector<std::string> retval;
     std::string::size_type i = 0;
     std::string::size_type j = src.find(c);
-    std::string tmp = src.substr(i,j-i);
+    std::string tmp = src.substr(i, j-i);
 
     if (tmp.size() == 0) return retval;
     retval.push_back(tmp);
 
     while (j != std::string::npos) {
         i = j++;
-        j = src.find(c,j);
+        j = src.find(c, j);
         if (j == std::string::npos) {
             retval.push_back(src.substr(i+1, src.size()));
             break;
         }
-        tmp = src.substr(i,j-i);
+        tmp = src.substr(i, j-i);
         retval.push_back(tmp.substr(1, tmp.size()));
     }
     return retval;
 }
-
-#endif //__common_hpp__
