@@ -26,45 +26,14 @@
     (struct ether_addr*)((struct eth_header*)eth->ether_shost)
 
 // Set Destination Address
-#define ETH_SDA(eth, addr) \
-    *((struct ether_addr*)((struct eth_header*)eth->ether_dhost)) = *((struct ether_addr*)addr)
+#define ETH_SDA(eth, addr)                                        \
+    *((struct ether_addr*)((struct eth_header*)eth->ether_dhost)) \
+                                    = *((struct ether_addr*)addr)
 
 // Set Source Address
-#define ETH_SSA(eth, addr) \
-    *((struct ether_addr*)((struct eth_header*)eth->ether_shost)) = *((struct ether_addr*)addr)
-
-struct arp_header {
-    uint16_t ar_hrd;             // format of hardware address
-    uint16_t ar_pro;             // format of protocol address
-    uint8_t  ar_hln;             // length of hardware address
-    uint8_t  ar_pln;             // length of protocol address
-    uint16_t ar_op;              // operation code
-    #define AR_POP_REQUEST    1  // request to resolve address
-    #define AR_POP_REPLY      2  // response to previous request
-    #define AR_POP_REVREQUEST 3  // request protocol address given hardware
-    #define AR_POP_REVREPLY   4  // response giving protocol address
-    #define AR_POP_INVREQUEST 8  // request to identify peer
-    #define AR_POP_INVREPLY   9  // response identifying peer
-    /*
-    // linux <net/if_arp.h>
-    struct arphdr {
-        unsigned short int ar_hrd;
-        unsigned short int ar_pro;
-        unsigned char ar_hln;
-        unsigned char ar_pln;
-        unsigned short int ar_op;
-    };
-    
-    // freebsd <net/if_arp.h>
-    struct  arphdr {
-        u_short ar_hrd;
-        u_short ar_pro;
-        u_char  ar_hln;
-        u_char  ar_pln;
-        u_short ar_op;
-    };
-    */
-};
+#define ETH_SSA(eth, addr)                                        \
+    *((struct ether_addr*)((struct eth_header*)eth->ether_shost)) \
+                                    = *((struct ether_addr*)addr)
 
 void
 swap_mac(struct ether_addr* mac1, struct ether_addr* mac2)

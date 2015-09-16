@@ -4,11 +4,14 @@
 
 
 #include "common.hpp"
+#include "ether.hpp"
 
 #include <iostream>
 #include <map>
 
 #include <stdio.h>
+#include <stdlib.h>
+//#include <malloc_np.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -29,15 +32,23 @@
 #endif
 
 #include <net/if.h>
-#ifndef __linux__
+
+#ifdef __linux__
+#include <linux/sockios.h>
+#include <linux/ethtool.h>
+#else 
 #include <net/if_dl.h>
 #endif
 
 #include <net/ethernet.h>
 
+#define NETMAP_WITH_LIBS
 #include <net/netmap.h>
 #include <net/netmap_user.h>
 
+#define NETMAP_SYNCWAIT_FAILD 0
+#define NETMAP_SYNCWAIT_SUCCESS 1
+#define NETMAP_SYNCWAIT_TIMEOUT 2
 
 class netmap
 {
@@ -50,10 +61,8 @@ public:
     // control methods
     bool open_if(const std::string& ifname);
     bool open_if(const char* ifname);
-#if NETMAP_API > 4
-    bool open_vale(const std::string& ifname);
-    bool open_vale(const char* ifname);
-#endif
+    bool open_vale(const std::string& ifname, int qnum);
+    bool open_vale(const char* ifname, int qnum);
     inline bool rxsync_sw();
     inline bool rxsync_hw(int ringid);
     inline bool txsync_sw();
@@ -61,10 +70,14 @@ public:
     inline bool txsync_sw_block();
     inline bool txsync_hw_block(int ringid);
     inline bool rxsync_sw_block();
+    inline int  rxsync_sw_wait(int msec);
     inline bool rxsync_hw_block(int ringid);
+    inline int  rxsync_hw_wait(int ringid, int msec);
 
     // utils methods
     void dump_nmr();
+    void dump_ring(int ringid);
+    bool negate_capabilities();
     bool set_promisc();
     bool unset_promisc();
 
@@ -94,7 +107,6 @@ public:
     inline struct netmap_ring* get_tx_ring_sw();
     inline uint32_t get_avail(struct netmap_ring* ring);
 
-
 private:
     uint32_t nm_version;
     uint16_t nm_rx_qnum;
@@ -104,6 +116,7 @@ private:
     struct ether_addr nm_mac;
     uint32_t nm_oui;
     uint32_t nm_bui;
+
     struct nmreq nm_nmr;
 
     //hard_info
@@ -144,7 +157,6 @@ netmap::netmap()
 
 netmap::~netmap()
 {
-    //printf("hoge:%d\n", __LINE__);
     for (int i = 0; i < nm_tx_qnum; i++) {
         if (nm_mem_addrs[i] != NULL) {
             _remove_hw_ring(i);
@@ -162,15 +174,14 @@ netmap::~netmap()
     nm_rx_ring_soft = NULL;
 }
 
-#if NETMAP_API > 4
 bool
-netmap::open_vale(const std::string& ifname)
+netmap::open_vale(const std::string& ifname, int qnum)
 {
-    return open_vale(ifname.c_str());
+    return open_vale(ifname.c_str(), qnum);
 }
 
 bool
-netmap::open_vale(const char* ifname)
+netmap::open_vale(const char* ifname, int qnum)
 {
     if (strncmp(ifname, "vale", 4) != 0) {
         MESG("can't open vale interface");
@@ -200,8 +211,8 @@ netmap::open_vale(const char* ifname)
         return false;
     }
 
-    nm_tx_qnum = 8;
-    nm_rx_qnum = 8;
+    nm_tx_qnum = qnum;
+    nm_rx_qnum = qnum;
     nm_memsize = nm_nmr.nr_memsize;
     close(fd);
 
@@ -241,7 +252,6 @@ netmap::open_vale(const char* ifname)
 
     return true;
 }
-#endif
 
 bool
 netmap::open_if(const std::string& ifname)
@@ -351,6 +361,9 @@ netmap::open_if(const char* ifname)
         if (debug) printf("(%s:sw) tx_ring :%p\n", ifname, nm_tx_ring_soft);
     }
 
+    //dump_nmr();
+    negate_capabilities();
+
     return true;
 }
 
@@ -416,6 +429,52 @@ netmap::rxsync_sw_block()
 #endif
 }
 
+inline int
+netmap::rxsync_sw_wait(int msec)
+{
+#ifdef POLL
+
+    int retval;
+    struct pollfd x[1];
+    x[0].fd = nm_fd_soft;
+    x[0].events = POLLIN;
+    retval = poll(x, 1, msec);
+    if (retval == 0) {
+        // timeout
+        return NETMAP_SYNCWAIT_TIMEOUT;
+    } else if (retval < 0) {
+        PERROR("poll");
+        return NETMAP_SYNCWAIT_FAILD;
+    } else {
+        return NETMAP_SYNCWAIT_SUCCESS;
+    }
+
+
+#else 
+
+    int retval;
+    struct timeval t;
+    t.tv_sec  = msec / 1000;
+    t.tv_usec = (msec % 1000000) * 1000;
+
+    fd_set s_fd;
+    FD_ZERO(&s_fd);
+    FD_SET(nm_fd_soft, &s_fd);
+    retval = select(nm_fd_soft+1, &s_fd, NULL, NULL, &t);
+    if (retval == 0) {
+        //timeout
+        return NETMAP_SYNCWAIT_TIMEOUT;
+    } else if (retval < 0) {
+        PERROR("select");
+        return NETMAP_SYNCWAIT_FAILD;
+    } else {
+        return NETMAP_SYNCWAIT_SUCCESS;
+    }
+
+#endif
+}
+
+
 inline bool
 netmap::rxsync_hw_block(int ringid)
 {
@@ -451,6 +510,51 @@ netmap::rxsync_hw_block(int ringid)
         return false;
     } else {
         return true;
+    }
+
+#endif
+}
+
+inline int
+netmap::rxsync_hw_wait(int ringid, int msec)
+{
+#ifdef POLL
+
+    int retval;
+    struct pollfd x[1];
+    x[0].fd = nm_fds[ringid];
+    x[0].events = POLLIN;
+    retval = poll(x, 1, msec);
+    if (retval == 0) {
+        // timeout
+        return NETMAP_SYNCWAIT_TIMEOUT;
+    } else if (retval < 0) {
+        PERROR("poll");
+        return NETMAP_SYNCWAIT_FAILD;
+    } else {
+        return NETMAP_SYNCWAIT_SUCCESS;
+    }
+
+
+#else 
+
+    int retval;
+    struct timeval t;
+    t.tv_sec  = msec / 1000;
+    t.tv_usec = (msec % 1000000) * 1000;
+
+    fd_set s_fd;
+    FD_ZERO(&s_fd);
+    FD_SET(nm_fds[ringid], &s_fd);
+    retval = select(nm_fds[ringid]+1, &s_fd, NULL, NULL, &t);
+    if (retval == 0) {
+        //timeout
+        return NETMAP_SYNCWAIT_TIMEOUT;
+    } else if (retval < 0) {
+        PERROR("select");
+        return NETMAP_SYNCWAIT_FAILD;
+    } else {
+        return NETMAP_SYNCWAIT_SUCCESS;
     }
 
 #endif
@@ -573,12 +677,9 @@ netmap::get_slot(struct netmap_ring* ring)
 inline void
 netmap::next(struct netmap_ring* ring)
 {
-#if NETMAP_API > 4
-    ring->head = ring->cur = nm_ring_next (ring, ring->cur);
-#else
-    ring->cur = NETMAP_RING_NEXT(ring, ring->cur);
-    ring->avail--;
-#endif
+    ring->head = ring -> cur =
+        unlikely(ring->cur + 1 == ring->num_slots) ? 0 : ring->cur + 1;
+    //ring->head = ring->cur = nm_ring_next (ring, ring->cur);
     return;
 }
 
@@ -673,54 +774,75 @@ netmap::get_rx_ring(int ringid)
 inline uint32_t
 netmap::get_avail(struct netmap_ring* ring)
 {
-#if NETMAP_API > 4
     return nm_ring_space(ring);
-#else
-    return ring->avail;
-#endif
 }
 
+void
+netmap::dump_ring(int ringid)
+{
+    struct netmap_ring* tx = get_tx_ring(ringid);
+    if (tx == NULL) {
+        MESG("cant get tx ring!");
+        return;
+    }
+
+    return;
+    struct netmap_ring* rx = get_rx_ring(ringid);
+    if (rx == NULL) {
+        MESG("cant get rx ring!");
+        return;
+    }
+    printf("-- tx ring ----------\n");
+    printf("tx_offset       : %ld\n", tx->buf_ofs);
+    printf("tx_num_slots    : %d\n", tx->num_slots);
+    printf("tx_buf_size     : %d\n", tx->nr_buf_size);
+    printf("tx_ringid       : %d\n", tx->ringid);
+    printf("tx_dir(tx0/rx1) : %d\n", tx->dir);
+    printf("tx_head         : %d\n", tx->head);
+    printf("tx_cur          : %d\n", tx->cur);
+    printf("tx_flags        : %x\n", tx->flags);
+    printf("tx_ts\n");
+    printf("tx_ts_tv_sec    : %ld\n", tx->ts.tv_sec);
+    printf("tx_ts_tv_usec   : %ld\n", tx->ts.tv_usec);
+    printf("tx_sem          : XXX\n");
+    printf("tx_slot         : XXX\n");
+    printf("-- rx ring ----------\n");
+    printf("rx_offset       : %ld\n", rx->buf_ofs);
+    printf("rx_num_slots    : %d\n", rx->num_slots);
+    printf("rx_buf_size     : %d\n", rx->nr_buf_size);
+    printf("rx_ringid       : %d\n", rx->ringid);
+    printf("rx_dir(tx0/rx1) : %d\n", rx->dir);
+    printf("rx_head         : %d\n", rx->head);
+    printf("rx_cur          : %d\n", rx->cur);
+    printf("rx_flags        : %x\n", rx->flags);
+    printf("rx_ts\n");
+    printf("rx_ts_tv_sec    : %ld\n", rx->ts.tv_sec);
+    printf("rx_ts_tv_usec   : %ld\n", rx->ts.tv_usec);
+    printf("rx_sem          : XXX\n");
+    printf("rx_slot         : XXX\n");
+    return;
+}
 
 void
 netmap::dump_nmr()
 {
-#if NETMAP_API > 4
-        printf("-----\n");
-        printf("nr_name     : %s\n", nm_nmr.nr_name);
-        printf("nr_varsion  : %d\n", nm_nmr.nr_version);
-        printf("nr_offset   : %d\n", nm_nmr.nr_offset);
-        printf("nr_memsize  : %d\n", nm_nmr.nr_memsize);
-        printf("nr_tx_slots : %d\n", nm_nmr.nr_tx_slots);
-        printf("nr_rx_slots : %d\n", nm_nmr.nr_rx_slots);
-        printf("nr_tx_rings : %d\n", nm_nmr.nr_tx_rings);
-        printf("nr_rx_rings : %d\n", nm_nmr.nr_rx_rings);
-        printf("nr_ringid   : %d\n", nm_nmr.nr_ringid);
-        printf("nr_cmd      : %d\n", nm_nmr.nr_cmd);
-        printf("nr_arg1     : %d\n", nm_nmr.nr_arg1);
-        printf("nr_arg2     : %d\n", nm_nmr.nr_arg2);
-        printf("nr_arg3     : %x\n", nm_nmr.nr_arg3);
-        printf("nr_nr_flags : %x\n", nm_nmr.nr_flags);
-        printf("nr_spare2[0]: %x\n", nm_nmr.spare2[0]);
-        printf("-----\n");
-#else
-        printf("-----\n");
-        printf("nr_name     : %s\n", nm_nmr.nr_name);
-        printf("nr_varsion  : %d\n", nm_nmr.nr_version);
-        printf("nr_offset   : %d\n", nm_nmr.nr_offset);
-        printf("nr_memsize  : %d\n", nm_nmr.nr_memsize);
-        printf("nr_tx_slots : %d\n", nm_nmr.nr_tx_slots);
-        printf("nr_rx_slots : %d\n", nm_nmr.nr_rx_slots);
-        printf("nr_tx_rings : %d\n", nm_nmr.nr_tx_rings);
-        printf("nr_rx_rings : %d\n", nm_nmr.nr_rx_rings);
-        printf("nr_ringid   : %d\n", nm_nmr.nr_ringid);
-        printf("nr_cmd      : %d\n", nm_nmr.nr_cmd);
-        printf("nr_arg1     : %d\n", nm_nmr.nr_arg1);
-        printf("nr_arg2     : %d\n", nm_nmr.nr_arg2);
-        printf("nr_spare2[0] : %x\n", nm_nmr.spare2[0]);
-        printf("nr_spare2[1] : %x\n", nm_nmr.spare2[1]);
-        printf("nr_spare2[2] : %x\n", nm_nmr.spare2[2]);
-        printf("-----\n");
-#endif
+    printf("-----\n");
+    printf("nr_name     : %s\n", nm_nmr.nr_name);
+    printf("nr_varsion  : %d\n", nm_nmr.nr_version);
+    printf("nr_offset   : %d\n", nm_nmr.nr_offset);
+    printf("nr_memsize  : %d\n", nm_nmr.nr_memsize);
+    printf("nr_tx_slots : %d\n", nm_nmr.nr_tx_slots);
+    printf("nr_rx_slots : %d\n", nm_nmr.nr_rx_slots);
+    printf("nr_tx_rings : %d\n", nm_nmr.nr_tx_rings);
+    printf("nr_rx_rings : %d\n", nm_nmr.nr_rx_rings);
+    printf("nr_ringid   : %d\n", nm_nmr.nr_ringid);
+    printf("nr_cmd      : %d\n", nm_nmr.nr_cmd);
+    printf("nr_arg1     : %d\n", nm_nmr.nr_arg1);
+    printf("nr_arg2     : %d\n", nm_nmr.nr_arg2);
+    printf("nr_spare2[0]: %x\n", nm_nmr.spare2[0]);
+    printf("nr_spare2[1]: %x\n", nm_nmr.spare2[1]);
+    printf("nr_spare2[2]: %x\n", nm_nmr.spare2[2]);
+    printf("-----\n");
     return;
 }
 
@@ -743,6 +865,46 @@ netmap::get_rx_qnum()
 }
 
 bool
+netmap::negate_capabilities()
+{
+#ifdef __linux__
+
+    return true;
+
+#else
+
+    int fd;
+    struct  ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    char* ifname = get_ifname();
+    strncpy(ifr.ifr_name, ifname, strlen(ifname));
+
+    if (ioctl(fd, SIOCGIFCAP, (caddr_t)&ifr) < 0) {
+        PERROR("ioctl");
+        MESG("failed to get interface status");
+        close(fd);
+        return false;
+    }
+
+    ifr.ifr_curcap = 0x0;
+    ifr.ifr_reqcap = 0x0;
+
+    if (ioctl(fd, SIOCSIFCAP, (caddr_t)&ifr) < 0) {
+        PERROR("ioctl");
+        MESG("failed to set interface to promisc");
+        close(fd);
+        return false;
+    }
+
+    close(fd);
+    return true;
+
+#endif
+}
+
+bool
 netmap::set_promisc()
 {
 #ifndef __linux__
@@ -754,7 +916,6 @@ netmap::set_promisc()
     fd = socket(AF_INET, SOCK_DGRAM, 0);
 
     char* ifname = get_ifname();
-
     strncpy(ifr.ifr_name, ifname, strlen(ifname));
     if (ioctl(fd, SIOCGIFFLAGS, (caddr_t)&ifr) < 0) {
         PERROR("ioctl");
@@ -768,6 +929,7 @@ netmap::set_promisc()
     int flags = (ifr.ifr_flagshigh << 16) | (ifr.ifr_flags & 0xffff);
 
     flags |= IFF_PPROMISC;
+    //flags = IFF_PPROMISC | IFF_UP;
     ifr.ifr_flags = flags & 0xffff;
     ifr.ifr_flagshigh = flags >> 16;
 
@@ -801,6 +963,8 @@ netmap::set_promisc()
     }
 
     ifr.ifr_flags |= IFF_PROMISC;
+    //ifr.ifr_flags = IFF_PROMISC | IFF_UP
+
 
     if (ioctl (fd, SIOCSIFFLAGS, &ifr) != 0) {
         PERROR("ioctl");
@@ -903,7 +1067,7 @@ bool netmap::_create_nmring(int ringid, int swhw)
     //printf("nm_ifname:%s\n", nm_ifname);
     strncpy (nmr.nr_name, nm_ifname, strlen(nm_ifname));
     nmr.nr_version = nm_version;
-#if NETMAP_API > 4
+
     //nmr.nr_ringid = swhw | ringid | NETMAP_NO_TX_POLL | NETMAP_DO_RX_POLL;
     nmr.nr_ringid = swhw | ringid;
     if (swhw == NETMAP_SW_RING) {
@@ -916,20 +1080,11 @@ bool netmap::_create_nmring(int ringid, int swhw)
     }else {
         nmr.nr_flags = 0;
     }
-    /*
+
+    // メモリマップを再利用する時
     if (ringid != 0) {
-        nmr.nr_arg1 = 4;
-    }
-    */
-#else
-    if (swhw == NETMAP_SW_RING) {
-        nmr.nr_ringid = swhw;
-    } else if (swhw == NETMAP_HW_RING) {
-        nmr.nr_ringid = swhw | ringid;
-    } else {
-        ;
-    }
-#endif
+        nmr.nr_arg2 = nmr.nr_arg2 | NM_OPEN_NO_MMAP;
+    } 
 
     if (ioctl(fd, NIOCREGIF, &nmr) < 0) {
         perror("ioctl");
@@ -940,7 +1095,6 @@ bool netmap::_create_nmring(int ringid, int swhw)
 
 #if NETMAP_API > 4
 
-#if 1 // test code
     char* mem;
     if (ringid != 0) {
         mem = nm_mem_addrs[0];
@@ -954,16 +1108,6 @@ bool netmap::_create_nmring(int ringid, int swhw)
             return false;
         }
     }
-#else
-    char* mem = (char*)mmap(NULL, nmr.nr_memsize,
-            PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
-    if (mem == MAP_FAILED) {
-        perror("mmap");
-        MESG("unable to mmap");
-        close(fd);
-        return false;
-    }
-#endif
 
 #else
 
@@ -977,6 +1121,7 @@ bool netmap::_create_nmring(int ringid, int swhw)
     }
 
 #endif
+
 
     nmif = NETMAP_IF(mem, nmr.nr_offset);
 
